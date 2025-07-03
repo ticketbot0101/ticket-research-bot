@@ -1,1 +1,45 @@
 
+# GitHub Actions Workflow
+# File: .github/workflows/run.yml
+# Purpose: Run concert scraping job daily and chain artist research
+
+name: Daily Concert Research
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'  # Every 12 hours
+  workflow_dispatch:
+
+jobs:
+  scrape-and-analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install beautifulsoup4 requests
+
+      - name: Run Google News concert scraper
+        run: |
+          python scrape_google_news.py
+
+      - name: Run Billboard Top Artist Analyzer (if implemented)
+        run: |
+          python get_billboard_top_artists.py || echo "⏭️ Billboard step skipped (not yet available)"
+
+      - name: Commit & Push event data (optional)
+        run: |
+          git config --global user.name 'AutoBot'
+          git config --global user.email 'actions@github.com'
+          git add data/events.json || true
+          git commit -m "🆕 Auto-update concert events $(date '+%F %T')" || echo "No changes to commit"
+          git push || echo "Nothing to push"
