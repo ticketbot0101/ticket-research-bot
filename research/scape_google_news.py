@@ -1,73 +1,90 @@
 import requests
 from bs4 import BeautifulSoup
-import json
 from datetime import datetime, timedelta
+import json
 import os
+import re
 
-# Keywords to look for in news articles
-KEYWORDS = ["tour", "concert", "presale", "on sale", "ticketmaster", "axs"]
-
-# Cities to monitor (expand as needed)
-TARGET_CITIES = ["New York", "Los Angeles", "Chicago", "Atlanta", "Las Vegas"]
-
-# Number of Google search results pages to scrape
-MAX_PAGES = 2
-
-# Date range filter (e.g. past 1 day)
-RECENT_DATE = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-
+# Constants
+SEARCH_TERMS = [
+    "concert announced",
+    "tour announced",
+    "on tour",
+    "live in concert",
+    "2025 tour",
+]
+EXCLUDE_TERMS = ["paw patrol", "disney on ice", "monster jam", "nfl", "nba", "wwe"]
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    "User-Agent": "Mozilla/5.0 (compatible; TicketBot/1.0; +https://github.com/yourrepo)"
 }
+RESULT_LIMIT = 25
+OUTPUT_FILE = "data/events.json"
 
+def clean_snippet(text):
+    # Normalize and remove formatting junk
+    return re.sub(r"\s+", " ", text).strip()
 
-def fetch_news_results(query):
+def looks_like_concert_announcement(snippet):
+    text = snippet.lower()
+    if any(ex in text for ex in EXCLUDE_TERMS):
+        return False
+    return True
+
+def extract_artist_and_location(snippet):
+    # Try naive name + city extract
+    m = re.search(r"([A-Z][a-zA-Z\s&]+)\s+(?:announces?|reveals?|brings?)\s+.*\s+to\s+([A-Z][a-zA-Z\s]+)", snippet)
+    if m:
+        artist = m.group(1).strip()
+        city = m.group(2).strip()
+        return artist, city
+    return None, None
+
+def fetch_concert_news():
     results = []
-    for page in range(MAX_PAGES):
-        start = page * 10
-        url = f"https://www.google.com/search?q={query}+site:billboard.com+OR+site:variety.com+OR+site:rollingstone.com&tbm=nws&start={start}&tbs=qdr:d"
-        response = requests.get(url, headers=HEADERS)
-        soup = BeautifulSoup(response.text, "html.parser")
-        articles = soup.select(".dbsr")
+    now = datetime.utcnow()
+    from_time = (now - timedelta(days=1)).strftime('%Y-%m-%d')
 
-        for article in articles:
-            title = article.select_one(".nDgy9d").text if article.select_one(".nDgy9d") else ""
-            link = article.a['href'] if article.a else ""
-            snippet = article.select_one(".Y3v8qd").text if article.select_one(".Y3v8qd") else ""
-            if any(k.lower() in title.lower() + snippet.lower() for k in KEYWORDS):
-                results.append({
-                    "title": title,
-                    "url": link,
-                    "snippet": snippet
-                })
+    for term in SEARCH_TERMS:
+        print(f"🔍 Searching Google News for: {term}")
+        search_url = (
+            f"https://news.google.com/search?q={term.replace(' ', '%20')}%20after:{from_time}&hl=en-US&gl=US&ceid=US:en"
+        )
+        response = requests.get(search_url, headers=HEADERS)
+        soup = BeautifulSoup(response.text, "html.parser")
+        articles = soup.select("article")
+
+        for article in articles[:RESULT_LIMIT]:
+            title_tag = article.select_one("h3") or article.select_one("h4")
+            snippet_tag = article.select_one("span")
+            link_tag = article.select_one("a")
+
+            if not title_tag or not link_tag:
+                continue
+
+            snippet = snippet_tag.text if snippet_tag else title_tag.text
+            if not looks_like_concert_announcement(snippet):
+                continue
+
+            artist, city = extract_artist_and_location(snippet)
+            url = "https://news.google.com" + link_tag["href"][1:]
+
+            results.append({
+                "artist": artist or title_tag.text,
+                "city": city or "unknown",
+                "headline": clean_snippet(title_tag.text),
+                "snippet": clean_snippet(snippet),
+                "url": url,
+                "scraped_at": now.strftime("%Y-%m-%d %H:%M:%S")
+            })
+
     return results
 
-
-def extract_events_from_news():
-    events = []
-    for city in TARGET_CITIES:
-        news_hits = fetch_news_results(f"concert {city}")
-        for hit in news_hits:
-            events.append({
-                "city": city,
-                "title": hit["title"],
-                "url": hit["url"],
-                "snippet": hit["snippet"],
-                "source": "google_news",
-                "fetched_at": datetime.utcnow().isoformat()
-            })
-    return events
-
-
-def save_events(events, path="data/events.json"):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+def save_results(events):
+    os.makedirs("data", exist_ok=True)
+    with open(OUTPUT_FILE, "w") as f:
         json.dump(events, f, indent=2)
-
+    print(f"✅ Saved {len(events)} events to {OUTPUT_FILE}")
 
 if __name__ == "__main__":
-    print("🔍 Gathering fresh concert news...")
-    all_events = extract_events_from_news()
-    save_events(all_events)
-    print(f"✅ Saved {len(all_events)} events to data/events.json")
-
+    events = fetch_concert_news()
+    save_results(events)
